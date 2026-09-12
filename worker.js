@@ -1,7 +1,5 @@
 /*
- * BSE FINANCIAL ANALYZER — BACKEND WORKER
- * Dedicated project for filtering BSE Financial Result Announcements.
- *
+ * BSE FINANCIAL ANALYZER — BACKEND WORKER (UPGRADED)
  * KV binding: BSE_FIN_KV
  * Secrets: TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID, NTFY_TOPIC, GEMINI_API_KEY
  */
@@ -22,7 +20,6 @@ const CORS_HEADERS = {
   "Access-Control-Allow-Headers": "Content-Type",
 };
 
-// Financial Keywords to auto-filter incoming BSE announcements
 const FINANCIAL_KEYWORDS = [
   "financial result",
   "financial results",
@@ -78,19 +75,21 @@ function escapeTelegramHtml(text) {
     .replace(/>/g, "&gt;");
 }
 
-async function sendTelegramAlert(title, body, scrip, link, fetchedAt, env) {
+async function sendTelegramAlert(company, scrip, headline, link, fetchedAt, env) {
   if (!env.TELEGRAM_BOT_TOKEN || !env.TELEGRAM_CHAT_ID) return;
-  var pdfLink = normalizeBseLink(link);
-  var targetLink =
-    pdfLink && pdfLink !== "https://www.bseindia.com"
-      ? pdfLink
-      : scrip
-        ? "https://www.bseindia.com/stock-share-price/" + scrip
-        : "https://www.bseindia.com";
+  
+  const pdfLink = normalizeBseLink(link);
   const formattedFetchTime = fetchedAt
     ? new Date(fetchedAt).toLocaleTimeString("en-IN", { timeZone: "Asia/Kolkata" })
     : "N/A";
-  const messageText = `📊 <b>[FINANCIAL RESULT] ${escapeTelegramHtml(title)}</b>\n\n${escapeTelegramHtml(body)}\n\n⏱ <b>Fetched:</b> ${formattedFetchTime}\n📄 <a href="${targetLink}">View PDF Result</a>`;
+
+  const messageText = 
+    `🚨 <b>NEW FINANCIAL RESULT FILED</b>\n\n` +
+    `🏢 <b>Company:</b> ${escapeTelegramHtml(company)} (${escapeTelegramHtml(scrip)})\n` +
+    `📝 <b>Title:</b> ${escapeTelegramHtml(headline)}\n` +
+    `⏱ <b>Fetched:</b> ${formattedFetchTime}\n\n` +
+    (pdfLink ? `📄 <a href="${pdfLink}">Download BSE PDF Attachment</a>` : "No PDF Attached");
+
   try {
     await fetch(`https://api.telegram.org/bot${env.TELEGRAM_BOT_TOKEN}/sendMessage`, {
       method: "POST",
@@ -99,7 +98,7 @@ async function sendTelegramAlert(title, body, scrip, link, fetchedAt, env) {
         chat_id: env.TELEGRAM_CHAT_ID,
         text: messageText,
         parse_mode: "HTML",
-        disable_web_page_preview: false,
+        disable_web_page_preview: true,
       }),
     });
   } catch (err) {
@@ -148,7 +147,7 @@ function matchesWatchlist(row, watchlist) {
   return false;
 }
 
-/* ---------- KV helpers ---------- */
+/* ---------- KV Helpers ---------- */
 
 async function kvPut(env, key, value, attempts = 3) {
   let lastErr;
@@ -221,7 +220,7 @@ async function saveAlerts(env, alerts) {
   await kvPut(env, "specialAlerts", JSON.stringify(alerts.slice(0, MAX_ALERTS)));
 }
 
-/* ---------- core polling logic ---------- */
+/* ---------- Core Polling Logic ---------- */
 
 async function fetchJsonPage1() {
   const dateStr = getIstDateStr();
@@ -234,8 +233,7 @@ async function fetchJsonPage1() {
   const response = await fetch(url, {
     method: "GET",
     headers: {
-      "User-Agent":
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+      "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
       Accept: "application/json, text/plain, */*",
       Referer: "https://www.bseindia.com/",
       Origin: "https://www.bseindia.com",
@@ -295,10 +293,8 @@ async function pollOnce(env, cachedWatchlist) {
     for (let i = 0; i < newOnes.length; i++) {
       const { row, fp } = newOnes[i];
 
-      // Step 1: Check Watchlist Match
       if (!matchesWatchlist(row, watchlist)) continue;
 
-      // Step 2: Filter specifically for Financial Results
       const headline = String(row.HEADLINE || row.NEWSSUB || "").trim();
       const category = String(row.CATEGORYNAME || "").trim();
       if (!isFinancialAnnouncement(headline, category)) continue;
@@ -319,7 +315,7 @@ async function pollOnce(env, cachedWatchlist) {
       }
 
       if (settings.telegram !== false) {
-        await sendTelegramAlert(`${company} (${scrip})`, headline, scrip, link, fetchedAt, env);
+        await sendTelegramAlert(company, scrip, headline, link, fetchedAt, env);
       }
 
       const pubDate = parsePubDate(row);
@@ -398,7 +394,7 @@ export default {
         return json({
           status: "running",
           app: "BSE Financial Results Analyzer Backend",
-          version: "1.0.0",
+          version: "1.1.0",
         });
       }
 
