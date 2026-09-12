@@ -1,85 +1,119 @@
 import os
+import io
+import json
 import requests
 import pdfplumber
-from google import genai
-from google.genai import types
+import google.generativeai as genai
 
-# 1. Environment Setup
+# Configuration
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")
+WORKER_URL = os.environ.get("WORKER_URL", "https://bse-financial-analyzer.daksheshpatelin.workers.dev")
 
-client = genai.Client(api_key=GEMINI_API_KEY)
+# Required browser headers to bypass BSE anti-bot blocking
+BSE_HEADERS = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+    "Accept": "application/pdf,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+    "Referer": "https://www.bseindia.com/",
+    "Origin": "https://www.bseindia.com"
+}
 
-def download_and_extract_pdf(pdf_url):
-    """Downloads PDF from BSE and extracts raw text from financial table pages."""
-    headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
-    }
-    response = requests.get(pdf_url, headers=headers, timeout=15)
+if GEMINI_API_KEY:
+    genai.configure(api_key=GEMINI_API_KEY)
+
+def download_and_extract_pdf(url):
+    print(f"Downloading PDF: {url}")
+    res = requests.get(url, headers=BSE_HEADERS, timeout=30)
     
-    with open("temp_result.pdf", "wb") as f:
-        f.write(response.content)
+    if res.status_code != 200:
+        raise Exception(f"HTTP Error {res.status_code} when accessing BSE PDF.")
+    
+    if not res.content.startswith(b"%PDF"):
+        raise Exception("Downloaded file is not a valid PDF. BSE request was likely blocked.")
+    
+    text_content = ""
+    with pdfplumber.open(io.BytesIO(res.content)) as pdf:
+        for page in pdf.pages:
+            extracted = page.extract_text()
+            if extracted:
+                text_content += extracted + "\n"
+                
+    if not text_content.strip():
+        raise Exception("PDF is image-based / scanned and has no extractable text.")
+        
+    return text_content
 
-    extracted_text = ""
-    with pdfplumber.open("temp_result.pdf") as pdf:
-        # Scan first 6 pages for financial tables
-        for page in pdf.pages[:6]:
-            extracted_text += (page.extract_text() or "") + "\n"
-
-    return extracted_text
-
-def analyze_with_gemini(company_name, raw_text):
-    """Processes extracted text through Gemini 2.5 Flash to generate structured metric insights."""
+def analyze_with_gemini(text_content, company_name):
+    if not GEMINI_API_KEY:
+        return "Gemini API Key missing."
+        
+    model = genai.GenerativeModel('gemini-2.5-flash')
     prompt = f"""
-    You are an expert Indian equity research analyst.
-    Analyze the financial results document for standard quarterly figures (INR Crores).
-    
-    Company: {company_name}
-
-    Extract the following metrics into a concise response:
-    - Revenue from Operations (Quarterly & YoY change %)
-    - Net Profit / PAT (Quarterly & YoY change %)
-    - Operating Margin / EBITDA (%)
-    - 2-3 key management highlights or operational notes
-    - Overall Verdict: [Very Bullish / Bullish / Neutral / Bearish]
+    Analyze the following financial results announcement for {company_name}.
+    Provide a concise summary in bullet points covering:
+    1. Key Financial Highlights (Revenue, Profit/Loss, Margins, YoY/QoQ growth if available)
+    2. Operational Highlights or Management Commentary
+    3. Dividend declarations or corporate actions (if any)
 
     Raw Document Text:
-    {raw_text[:12000]}
+    {text_content[:15000]}
     """
-
-    response = client.models.generate_content(
-        model="gemini-2.5-flash",
-        contents=prompt
-    )
+    
+    response = model.generate_content(prompt)
     return response.text
 
-def send_telegram_insight(company_name, analysis, pdf_url):
-    """Dispatches the AI output to Telegram."""
-    message = (
-        f"📊 <b>FINANCIAL RESULT INSIGHT: {company_name}</b>\n\n"
-        f"{analysis}\n\n"
-        f"📄 <a href='{pdf_url}'>Read Full BSE PDF</a>"
-    )
+def send_telegram_summary(company, headline, summary, pdf_url):
+    if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
+        print("Telegram credentials missing; skipping summary message.")
+        return
+
+    message = f" <b>GEMINI FINANCIAL SUMMARY</b>\n\n" \
+              f" <b>Company:</b> {company}\n" \
+              f" <b>Headline:</b> {headline}\n\n" \
+              f"<b>Analysis:</b>\n{summary}\n\n" \
+              f" <a href='{pdf_url}'>View Original BSE PDF</a>"
+
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
-    payload = {
+    requests.post(url, json={
         "chat_id": TELEGRAM_CHAT_ID,
         "text": message,
         "parse_mode": "HTML",
         "disable_web_page_preview": True
-    }
-    requests.post(url, json=payload)
+    })
 
-# Example execution entry point
+def main():
+    print("Checking Worker for newly alerted PDFs...")
+    try:
+        res = requests.get(f"{WORKER_URL}/alerts", timeout=15)
+        if res.status_code != 200:
+            print("No pending alerts returned from backend worker.")
+            return
+            
+        data = res.json()
+        alerts = data.get("items", [])
+        
+        if not alerts:
+            print("Watchlist is empty or no new financial announcements filed recently.")
+            return
+
+        for alert in alerts[:3]:  # Process up to 3 recent alerts
+            pdf_url = alert.get("link")
+            company = alert.get("company", "Company")
+            headline = alert.get("title", "Financial Result")
+            
+            if not pdf_url or not pdf_url.endswith(".pdf"):
+                continue
+                
+            try:
+                pdf_text = download_and_extract_pdf(pdf_url)
+                summary = analyze_with_gemini(pdf_text, company)
+                send_telegram_summary(company, headline, summary, pdf_url)
+            except Exception as e:
+                print(f"Skipping {company} due to error: {e}")
+
+    except Exception as e:
+        print(f"Pipeline execution error: {e}")
+
 if __name__ == "__main__":
-    sample_pdf = "https://www.bseindia.com/xml-data/corpfiling/AttachLive/sample.pdf"
-    sample_company = "KPIT Technologies"
-
-    print("Extracting PDF text...")
-    pdf_text = download_and_extract_pdf(sample_pdf)
-    
-    print("Running Gemini analysis...")
-    insight = analyze_with_gemini(sample_company, pdf_text)
-    
-    print("Sending Telegram Alert...")
-    send_telegram_insight(sample_company, insight, sample_pdf)
+    main()
