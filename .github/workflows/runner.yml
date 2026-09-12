@@ -1,0 +1,32 @@
+name: BSE Financial Result Automated Parser
+
+on:
+  schedule:
+    # Runs every 15 minutes during Indian market hours (03:30 UTC to 12:30 UTC)
+    - cron: '*/15 3-12 * * 1-5'
+  workflow_dispatch: # Allows manual trigger from GitHub UI
+
+jobs:
+  run-analyzer:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install Dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install requests pdfplumber google-genai
+
+      - name: Run Financial Result Engine
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: |
+          python analyzer.py
