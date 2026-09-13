@@ -1,0 +1,19 @@
+{
+  "name": "bse-financial-analyzer",
+  "main": "worker.js",
+  "compatibility_date": "2026-08-24",
+  "triggers": {
+    "crons": [
+      "* 0-15 * * 2-6"
+    ]
+  },
+  "kv_namespaces": [
+    {
+      "binding": "BSE_FIN_KV",
+      "id": "b68450e95f9049b89234d2ccad19f6d2"
+    }
+  ],
+  "observability": {
+    "enabled": true
+  }
+}
