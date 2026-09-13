@@ -82,10 +82,22 @@ def send_telegram_summary(company, headline, summary, pdf_url):
         "disable_web_page_preview": True
     })
 
+def mark_processed(fingerprints):
+    """Tell the worker these alerts are done, so the next run (15 min later)
+    doesn't re-download the same PDF and re-send the same Gemini summary."""
+    if not fingerprints:
+        return
+    try:
+        requests.post(f"{WORKER_URL}/alerts/mark-processed", json={"fingerprints": fingerprints}, timeout=15)
+    except Exception as e:
+        print(f"Warning: failed to mark alerts processed: {e}")
+
 def main():
     print("Checking Worker for newly alerted PDFs...")
     try:
-        res = requests.get(f"{WORKER_URL}/alerts", timeout=15)
+        # ?pending=1 filters out alerts this pipeline has already summarized,
+        # so the same 1-3 alerts aren't reprocessed/re-sent every 15 minutes.
+        res = requests.get(f"{WORKER_URL}/alerts?pending=1", timeout=15)
         if res.status_code != 200:
             print("No pending alerts returned from backend worker.")
             return
@@ -94,23 +106,34 @@ def main():
         alerts = data.get("items", [])
         
         if not alerts:
-            print("Watchlist is empty or no new financial announcements filed recently.")
+            print("No new, unprocessed financial announcements right now.")
             return
 
+        done_fingerprints = []
         for alert in alerts[:3]:  # Process up to 3 recent alerts
             pdf_url = alert.get("link")
             company = alert.get("company", "Company")
             headline = alert.get("title", "Financial Result")
-            
+            fingerprint = alert.get("fingerprint")
+
             if not pdf_url or not pdf_url.endswith(".pdf"):
                 continue
-                
+
             try:
                 pdf_text = download_and_extract_pdf(pdf_url)
                 summary = analyze_with_gemini(pdf_text, company)
                 send_telegram_summary(company, headline, summary, pdf_url)
+                if fingerprint:
+                    done_fingerprints.append(fingerprint)
             except Exception as e:
                 print(f"Skipping {company} due to error: {e}")
+                # Mark as processed even on failure (e.g. BSE blocked the PDF
+                # download from GitHub's IPs) so a permanently-broken filing
+                # doesn't get retried forever every 15 minutes.
+                if fingerprint:
+                    done_fingerprints.append(fingerprint)
+
+        mark_processed(done_fingerprints)
 
     except Exception as e:
         print(f"Pipeline execution error: {e}")

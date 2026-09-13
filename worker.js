@@ -1,7 +1,8 @@
 /*
  * BSE FINANCIAL ANALYZER — BACKEND WORKER (UPGRADED)
  * KV binding: BSE_FIN_KV
- * Secrets: TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID, NTFY_TOPIC, GEMINI_API_KEY
+ * Secrets: TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID
+ * (GEMINI_API_KEY is used by the separate analyzer.py GitHub Action, not this worker)
  */
 
 const BSE_ANN_API =
@@ -177,9 +178,9 @@ async function setWatchlist(env, watchlist) {
 }
 
 async function getNotificationSettings(env) {
-  if (!env.BSE_FIN_KV) return { telegram: true, ntfy: true };
+  if (!env.BSE_FIN_KV) return { telegram: true };
   const data = await env.BSE_FIN_KV.get("notificationSettings", "json");
-  return data || { telegram: true, ntfy: true };
+  return data || { telegram: true };
 }
 
 async function setNotificationSettings(env, settings) {
@@ -220,9 +221,29 @@ async function saveAlerts(env, alerts) {
   await kvPut(env, "specialAlerts", JSON.stringify(alerts.slice(0, MAX_ALERTS)));
 }
 
+// Tracks which alert fingerprints the Gemini/analyzer.py pipeline has already
+// summarized, so the every-15-min GitHub Action doesn't re-download the same
+// PDF and re-send the same Telegram summary on every run.
+async function getGeminiProcessed(env) {
+  if (!env.BSE_FIN_KV) return [];
+  const data = await env.BSE_FIN_KV.get("geminiProcessed", "json");
+  return Array.isArray(data) ? data : [];
+}
+
+async function markGeminiProcessed(env, fingerprints) {
+  if (!env.BSE_FIN_KV || !fingerprints || !fingerprints.length) return;
+  const existing = await getGeminiProcessed(env);
+  const set = new Set(existing);
+  fingerprints.forEach((fp) => set.add(fp));
+  await kvPut(env, "geminiProcessed", JSON.stringify(Array.from(set).slice(0, MAX_ALERTS * 2)));
+}
+
 /* ---------- Core Polling Logic ---------- */
 
-async function fetchJsonPage1() {
+const FETCH_TIMEOUT_MS = 8000;
+const FETCH_MAX_ATTEMPTS = 3;
+
+async function fetchJsonPage1Once() {
   const dateStr = getIstDateStr();
   const url =
     `${BSE_ANN_API}?pageno=1` +
@@ -230,21 +251,43 @@ async function fetchJsonPage1() {
     `&strPrevDate=${dateStr}&strToDate=${dateStr}` +
     `&strSearch=P&strscrip=&strType=C`;
 
-  const response = await fetch(url, {
-    method: "GET",
-    headers: {
-      "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-      Accept: "application/json, text/plain, */*",
-      Referer: "https://www.bseindia.com/",
-      Origin: "https://www.bseindia.com",
-      "Cache-Control": "no-cache",
-    },
-    cf: { cacheTtl: 0, cacheEverything: false },
-  });
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
+  try {
+    const response = await fetch(url, {
+      method: "GET",
+      headers: {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        Accept: "application/json, text/plain, */*",
+        Referer: "https://www.bseindia.com/",
+        Origin: "https://www.bseindia.com",
+        "Cache-Control": "no-cache",
+      },
+      cf: { cacheTtl: 0, cacheEverything: false },
+      signal: controller.signal,
+    });
 
-  if (!response.ok) throw new Error(`BSE JSON HTTP ${response.status}`);
-  const data = await response.json();
-  return data && Array.isArray(data.Table) ? data.Table : [];
+    if (!response.ok) throw new Error(`BSE JSON HTTP ${response.status}`);
+    const data = await response.json();
+    return data && Array.isArray(data.Table) ? data.Table : [];
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+// Retries transient network failures (e.g. "fetch failed") with backoff -
+// same fix already proven on the sibling bse-fastest-jsonapi worker.
+async function fetchJsonPage1() {
+  let lastErr;
+  for (let i = 0; i < FETCH_MAX_ATTEMPTS; i++) {
+    try {
+      return await fetchJsonPage1Once();
+    } catch (err) {
+      lastErr = err;
+      if (i < FETCH_MAX_ATTEMPTS - 1) await sleep(800 + i * 700);
+    }
+  }
+  throw lastErr;
 }
 
 async function pollOnce(env, cachedWatchlist) {
@@ -423,8 +466,18 @@ export default {
       }
 
       if (url.pathname === "/announcements" || url.pathname === "/alerts") {
-        const items = (await getAlerts(env)).slice(0, DISPLAY_LIMIT);
+        let items = (await getAlerts(env)).slice(0, DISPLAY_LIMIT);
+        if (url.searchParams.get("pending") === "1") {
+          const processed = new Set(await getGeminiProcessed(env));
+          items = items.filter((it) => !processed.has(it.fingerprint));
+        }
         return json({ ok: true, count: items.length, items });
+      }
+
+      if (url.pathname === "/alerts/mark-processed" && request.method === "POST") {
+        const body = await request.json();
+        await markGeminiProcessed(env, body.fingerprints || []);
+        return json({ ok: true });
       }
 
       return json({ error: "Not found" }, 404);
