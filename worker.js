@@ -456,6 +456,18 @@ export default {
         }
       }
 
+      if (url.pathname === "/watchlist/overwrite" && request.method === "POST") {
+        const body = await request.json();
+        const rawWatchlist = body.watchlist || [];
+        // Format strings or numbers into valid watchlist objects matching worker structure [{ scrip: "..." }]
+        const formattedWatchlist = rawWatchlist.map((item) => {
+          if (typeof item === "object" && item !== null) return item;
+          return { scrip: String(item).trim() };
+        });
+        await setWatchlist(env, formattedWatchlist);
+        return json({ ok: true, count: formattedWatchlist.length, watchlist: formattedWatchlist });
+      }
+
       if (url.pathname === "/notification-settings") {
         if (request.method === "GET") return json({ ok: true, settings: await getNotificationSettings(env) });
         if (request.method === "POST") {
