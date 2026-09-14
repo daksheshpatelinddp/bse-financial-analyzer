@@ -18,7 +18,7 @@ const MAX_ALERTS = 500;
 const DISPLAY_LIMIT = 50;
 
 const BURST_POLLS = 4;
-const BURST_GAP_MS = 14000;
+const BURST_GAP_MS = 25000;
 
 const CORS_HEADERS = {
   "Access-Control-Allow-Origin": "*",
