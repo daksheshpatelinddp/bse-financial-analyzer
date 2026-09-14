@@ -303,46 +303,47 @@ async function pollOnce(env, cachedWatchlist) {
 
   const watchlist = cachedWatchlist || (await getWatchlist(env));
   const settings = await getNotificationSettings(env);
+  // Empty watchlist = no filter at all. Every item in this feed is already
+  // an actual filed financial result (that's the whole feed's purpose), so
+  // with nothing to filter by, alert on everything. A non-empty watchlist
+  // still narrows down to just those companies, if that's ever wanted.
+  const hasFilter = watchlist.length > 0;
 
   let newAlertCount = 0;
   let alerts = null;
   let alertFpSet = null;
 
-  if (watchlist.length > 0) {
-    for (let i = 0; i < newOnes.length; i++) {
-      const { item, fp } = newOnes[i];
+  for (let i = 0; i < newOnes.length; i++) {
+    const { item, fp } = newOnes[i];
 
-      if (!matchesWatchlistXml(item, watchlist)) continue;
-      // Every item in this feed is already a financial result by
-      // definition - no separate keyword check needed here.
+    if (hasFilter && !matchesWatchlistXml(item, watchlist)) continue;
 
-      if (!alertFpSet) {
-        alertFpSet = new Set(await getAlertFingerprints(env));
-        alerts = await getAlerts(env);
-      }
-      if (alertFpSet.has(fp)) continue;
-
-      const company = item.company || "Scrip";
-      const scrip = item.scrip || "";
-
-      if (settings.telegram !== false) {
-        await sendTelegramAlert(company, scrip, item.title, item.description, item.link, fetchedAt, env);
-      }
-
-      alerts.unshift({
-        company,
-        scrip,
-        title: item.title,
-        description: item.description,
-        link: item.link,
-        fingerprint: fp,
-        fetchedAt,
-        alert: true,
-        alertCreatedAt: new Date().toISOString(),
-      });
-      alertFpSet.add(fp);
-      newAlertCount++;
+    if (!alertFpSet) {
+      alertFpSet = new Set(await getAlertFingerprints(env));
+      alerts = await getAlerts(env);
     }
+    if (alertFpSet.has(fp)) continue;
+
+    const company = item.company || "Scrip";
+    const scrip = item.scrip || "";
+
+    if (settings.telegram !== false) {
+      await sendTelegramAlert(company, scrip, item.title, item.description, item.link, fetchedAt, env);
+    }
+
+    alerts.unshift({
+      company,
+      scrip,
+      title: item.title,
+      description: item.description,
+      link: item.link,
+      fingerprint: fp,
+      fetchedAt,
+      alert: true,
+      alertCreatedAt: new Date().toISOString(),
+    });
+    alertFpSet.add(fp);
+    newAlertCount++;
   }
 
   const updatedSeen = [];
