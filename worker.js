@@ -3,10 +3,15 @@
  * KV binding: BSE_FIN_KV
  * Secrets: TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID
  * (GEMINI_API_KEY is used by the separate analyzer.py GitHub Action, not this worker)
+ *
+ * Primary source: BSE's own "Latest Financial Results" RSS feed
+ * (FinancialResultsFeed.xml). Every item in this feed IS a financial result
+ * already - no keyword guessing needed like the old general-announcements
+ * approach. Each item links to an XBRL HTML page (not a PDF).
  */
 
-const BSE_ANN_API =
-  "https://api.bseindia.com/BseIndiaAPI/api/AnnSubCategoryGetData/w";
+const BSE_RESULTS_XML =
+  "https://beta.bseindia.com/Data/XML/FinancialResultsFeed.xml";
 
 const MAX_RECENT_SEEN = 800;
 const MAX_ALERTS = 500;
@@ -21,17 +26,6 @@ const CORS_HEADERS = {
   "Access-Control-Allow-Headers": "Content-Type",
 };
 
-const FINANCIAL_KEYWORDS = [
-  "financial result",
-  "financial results",
-  "audited result",
-  "unaudited result",
-  "quarterly result",
-  "outcome of board meeting",
-  "interim financial",
-  "segment result"
-];
-
 function json(data, status = 200) {
   return new Response(JSON.stringify(data), {
     status,
@@ -43,30 +37,63 @@ function sleep(ms) {
   return new Promise((r) => setTimeout(r, ms));
 }
 
-function getIstDateStr() {
-  const ist = new Date(Date.now() + 5.5 * 60 * 60 * 1000);
-  const yyyy = ist.getUTCFullYear();
-  const mm = String(ist.getUTCMonth() + 1).padStart(2, "0");
-  const dd = String(ist.getUTCDate()).padStart(2, "0");
-  return `${yyyy}${mm}${dd}`;
+function decodeXmlEntities(str) {
+  return String(str || "")
+    .replace(/&amp;/g, "&")
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;/g, "'");
 }
 
-function normalizeBseLink(rawLink) {
-  var clean = String(rawLink || "").trim();
-  if (!clean) return "https://www.bseindia.com";
-  if (clean.indexOf("AttachLive") !== -1 || clean.indexOf("AttachHis") !== -1) {
-    var fileName = clean.split("/").pop();
-    if (fileName) return "https://www.bseindia.com/xml-data/corpfiling/AttachLive/" + fileName;
-  }
-  if (clean.indexOf("http") !== 0) {
-    return clean.indexOf("/") === 0 ? "https://www.bseindia.com" + clean : "https://www.bseindia.com/" + clean;
-  }
-  return clean;
+function extractTag(block, tag) {
+  const re = new RegExp(`<${tag}>([\\s\\S]*?)<\\/${tag}>`, "i");
+  const m = re.exec(block);
+  return m ? decodeXmlEntities(m[1].trim()) : "";
 }
 
-function isFinancialAnnouncement(headline, category) {
-  const combined = `${headline} ${category}`.toLowerCase();
-  return FINANCIAL_KEYWORDS.some((kw) => combined.includes(kw));
+// Titles look like "Raunaq International Ltd (537840)"
+const TITLE_SCRIP_RE = /^(.*?)\s*\((\d+)\)\s*$/;
+
+function parseFinancialResultsXml(xmlText) {
+  const items = [];
+  const itemRe = /<item>([\s\S]*?)<\/item>/g;
+  let m;
+  while ((m = itemRe.exec(xmlText)) !== null) {
+    const block = m[1];
+    const rawTitle = extractTag(block, "title");
+    const link = extractTag(block, "link");
+    const description = extractTag(block, "description");
+    if (!rawTitle || !link) continue;
+
+    const tm = TITLE_SCRIP_RE.exec(rawTitle);
+    const company = tm ? tm[1].trim() : rawTitle;
+    const scrip = tm ? tm[2].trim() : "";
+
+    items.push({ company, scrip, title: rawTitle, link, description });
+  }
+  return items;
+}
+
+function computeFingerprintXml(item) {
+  // No per-item publish time in this feed, so the link (which embeds a
+  // unique document id) is the stable de-dup key.
+  return `xmlrpt:${item.link}`;
+}
+
+function matchesWatchlistXml(item, watchlist) {
+  if (!watchlist || !watchlist.length) return false;
+  const itemScrip = String(item.scrip || "").trim();
+  const itemCompany = String(item.company || "").toLowerCase().trim();
+
+  for (let i = 0; i < watchlist.length; i++) {
+    const w = watchlist[i];
+    const ws = String(w.scrip || "").trim();
+    if (ws && itemScrip && ws === itemScrip) return true;
+    const wn = String(w.name || "").toLowerCase().trim();
+    if (wn.length >= 3 && itemCompany && itemCompany.indexOf(wn) !== -1) return true;
+  }
+  return false;
 }
 
 function escapeTelegramHtml(text) {
@@ -76,20 +103,19 @@ function escapeTelegramHtml(text) {
     .replace(/>/g, "&gt;");
 }
 
-async function sendTelegramAlert(company, scrip, headline, link, fetchedAt, env) {
+async function sendTelegramAlert(company, scrip, title, description, link, fetchedAt, env) {
   if (!env.TELEGRAM_BOT_TOKEN || !env.TELEGRAM_CHAT_ID) return;
-  
-  const pdfLink = normalizeBseLink(link);
+
   const formattedFetchTime = fetchedAt
     ? new Date(fetchedAt).toLocaleTimeString("en-IN", { timeZone: "Asia/Kolkata" })
     : "N/A";
 
-  const messageText = 
+  const messageText =
     `🚨 <b>NEW FINANCIAL RESULT FILED</b>\n\n` +
     `🏢 <b>Company:</b> ${escapeTelegramHtml(company)} (${escapeTelegramHtml(scrip)})\n` +
-    `📝 <b>Title:</b> ${escapeTelegramHtml(headline)}\n` +
-    `⏱ <b>Fetched:</b> ${formattedFetchTime}\n\n` +
-    (pdfLink ? `📄 <a href="${pdfLink}">Download BSE PDF Attachment</a>` : "No PDF Attached");
+    (description ? `📋 <b>Details:</b> ${escapeTelegramHtml(description)}\n` : "") +
+    `⏱ <b>Detected:</b> ${formattedFetchTime}\n\n` +
+    (link ? `📄 <a href="${link}">View Financial Result</a>` : "No document link");
 
   try {
     await fetch(`https://api.telegram.org/bot${env.TELEGRAM_BOT_TOKEN}/sendMessage`, {
@@ -105,47 +131,6 @@ async function sendTelegramAlert(company, scrip, headline, link, fetchedAt, env)
   } catch (err) {
     console.error("Telegram error:", err);
   }
-}
-
-function parsePubDate(row) {
-  let pubDate = row.DissemDT || row.News_submission_dt || row.NEWS_DT || row.DT_TM || "";
-  if (!pubDate) return "";
-  pubDate = String(pubDate).trim();
-  try {
-    if (!pubDate.includes("Z") && !pubDate.includes("+") && pubDate.indexOf("-", 10) === -1) {
-      pubDate = pubDate.replace(" ", "T") + "+05:30";
-    }
-    const d = new Date(pubDate);
-    if (!isNaN(d.getTime())) return d.toISOString();
-  } catch (e) {}
-  return String(row.DissemDT || row.NEWS_DT || "");
-}
-
-function computeFingerprint(row) {
-  const att = String(row.ATTACHMENTNAME || "").trim().toLowerCase();
-  if (att) return `att:${att}`;
-  const scrip = String(row.SCRIP_CD || "").trim();
-  const title = String(row.HEADLINE || row.NEWSSUB || "")
-    .toLowerCase()
-    .replace(/\s+/g, " ")
-    .trim();
-  const day = String(row.DissemDT || row.NEWS_DT || "").slice(0, 10);
-  return `st:${scrip}|${title}|${day}`;
-}
-
-function matchesWatchlist(row, watchlist) {
-  if (!watchlist || !watchlist.length) return false;
-  const itemScrip = String(row.SCRIP_CD || "").trim();
-  const itemCompany = String(row.SLONGNAME || "").toLowerCase().trim();
-
-  for (let i = 0; i < watchlist.length; i++) {
-    const w = watchlist[i];
-    const ws = String(w.scrip || "").trim();
-    if (ws && itemScrip && ws === itemScrip) return true;
-    const wn = String(w.name || "").toLowerCase().trim();
-    if (wn.length >= 3 && itemCompany && itemCompany.indexOf(wn) !== -1) return true;
-  }
-  return false;
 }
 
 /* ---------- KV Helpers ---------- */
@@ -243,45 +228,36 @@ async function markGeminiProcessed(env, fingerprints) {
 const FETCH_TIMEOUT_MS = 8000;
 const FETCH_MAX_ATTEMPTS = 3;
 
-async function fetchJsonPage1Once() {
-  const dateStr = getIstDateStr();
-  const url =
-    `${BSE_ANN_API}?pageno=1` +
-    `&strCat=-1&subcategory=-1` +
-    `&strPrevDate=${dateStr}&strToDate=${dateStr}` +
-    `&strSearch=P&strscrip=&strType=C`;
-
+async function fetchFinancialResultsXmlOnce() {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
   try {
-    const response = await fetch(url, {
+    const response = await fetch(BSE_RESULTS_XML, {
       method: "GET",
       headers: {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-        Accept: "application/json, text/plain, */*",
+        Accept: "application/xml, text/xml, */*",
         Referer: "https://www.bseindia.com/",
-        Origin: "https://www.bseindia.com",
         "Cache-Control": "no-cache",
       },
       cf: { cacheTtl: 0, cacheEverything: false },
       signal: controller.signal,
     });
-
-    if (!response.ok) throw new Error(`BSE JSON HTTP ${response.status}`);
-    const data = await response.json();
-    return data && Array.isArray(data.Table) ? data.Table : [];
+    if (!response.ok) throw new Error(`BSE XML HTTP ${response.status}`);
+    const text = await response.text();
+    return parseFinancialResultsXml(text);
   } finally {
     clearTimeout(timer);
   }
 }
 
-// Retries transient network failures (e.g. "fetch failed") with backoff -
-// same fix already proven on the sibling bse-fastest-jsonapi worker.
-async function fetchJsonPage1() {
+// Retries transient network failures with backoff - same discipline already
+// proven on the JSON-API-based sibling worker.
+async function fetchFinancialResultsXml() {
   let lastErr;
   for (let i = 0; i < FETCH_MAX_ATTEMPTS; i++) {
     try {
-      return await fetchJsonPage1Once();
+      return await fetchFinancialResultsXmlOnce();
     } catch (err) {
       lastErr = err;
       if (i < FETCH_MAX_ATTEMPTS - 1) await sleep(800 + i * 700);
@@ -292,22 +268,22 @@ async function fetchJsonPage1() {
 
 async function pollOnce(env, cachedWatchlist) {
   const fetchedAt = new Date().toISOString();
-  let rows = [];
+  let items = [];
   try {
-    rows = await fetchJsonPage1();
+    items = await fetchFinancialResultsXml();
   } catch (err) {
     console.error("fetch failed:", err);
     return { ok: false, error: String(err), newAnnouncements: 0, newAlerts: 0 };
   }
 
-  if (!rows.length) return { ok: true, newAnnouncements: 0, newAlerts: 0, rows: 0 };
+  if (!items.length) return { ok: true, newAnnouncements: 0, newAlerts: 0, rows: 0 };
 
   const page = [];
-  for (let i = 0; i < rows.length; i++) {
-    const row = rows[i];
-    const fp = computeFingerprint(row);
+  for (let i = 0; i < items.length; i++) {
+    const item = items[i];
+    const fp = computeFingerprintXml(item);
     if (!fp) continue;
-    page.push({ row, fp });
+    page.push({ item, fp });
   }
 
   const recentSeen = await getRecentSeen(env);
@@ -315,7 +291,7 @@ async function pollOnce(env, cachedWatchlist) {
 
   if (recentSeen.length === 0) {
     await saveRecentSeen(env, page.map((p) => p.fp));
-    return { ok: true, status: "baseline", newAnnouncements: 0, newAlerts: 0, rows: rows.length };
+    return { ok: true, status: "baseline", newAnnouncements: 0, newAlerts: 0, rows: items.length };
   }
 
   const newOnes = [];
@@ -323,7 +299,7 @@ async function pollOnce(env, cachedWatchlist) {
     if (!seenSet.has(page[i].fp)) newOnes.push(page[i]);
   }
 
-  if (newOnes.length === 0) return { ok: true, newAnnouncements: 0, newAlerts: 0, rows: rows.length };
+  if (newOnes.length === 0) return { ok: true, newAnnouncements: 0, newAlerts: 0, rows: items.length };
 
   const watchlist = cachedWatchlist || (await getWatchlist(env));
   const settings = await getNotificationSettings(env);
@@ -334,13 +310,11 @@ async function pollOnce(env, cachedWatchlist) {
 
   if (watchlist.length > 0) {
     for (let i = 0; i < newOnes.length; i++) {
-      const { row, fp } = newOnes[i];
+      const { item, fp } = newOnes[i];
 
-      if (!matchesWatchlist(row, watchlist)) continue;
-
-      const headline = String(row.HEADLINE || row.NEWSSUB || "").trim();
-      const category = String(row.CATEGORYNAME || "").trim();
-      if (!isFinancialAnnouncement(headline, category)) continue;
+      if (!matchesWatchlistXml(item, watchlist)) continue;
+      // Every item in this feed is already a financial result by
+      // definition - no separate keyword check needed here.
 
       if (!alertFpSet) {
         alertFpSet = new Set(await getAlertFingerprints(env));
@@ -348,28 +322,20 @@ async function pollOnce(env, cachedWatchlist) {
       }
       if (alertFpSet.has(fp)) continue;
 
-      const company = String(row.SLONGNAME || "").trim() || "Scrip";
-      const scrip = String(row.SCRIP_CD || "").trim();
-      let link = "";
-      if (row.ATTACHMENTNAME) {
-        link = `https://www.bseindia.com/xml-data/corpfiling/AttachLive/${row.ATTACHMENTNAME}`;
-      } else if (row.NSURL) {
-        link = row.NSURL;
-      }
+      const company = item.company || "Scrip";
+      const scrip = item.scrip || "";
 
       if (settings.telegram !== false) {
-        await sendTelegramAlert(company, scrip, headline, link, fetchedAt, env);
+        await sendTelegramAlert(company, scrip, item.title, item.description, item.link, fetchedAt, env);
       }
-
-      const pubDate = parsePubDate(row);
 
       alerts.unshift({
         company,
         scrip,
-        title: headline,
-        link,
+        title: item.title,
+        description: item.description,
+        link: item.link,
         fingerprint: fp,
-        pubDate,
         fetchedAt,
         alert: true,
         alertCreatedAt: new Date().toISOString(),
@@ -406,9 +372,10 @@ async function pollOnce(env, cachedWatchlist) {
     ok: true,
     newAnnouncements: newOnes.length,
     newAlerts: newAlertCount,
-    rows: rows.length,
+    rows: items.length,
   };
 }
+
 
 async function pollBurst(env) {
   const results = [];
