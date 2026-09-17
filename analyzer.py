@@ -75,10 +75,22 @@ def analyze_with_gemini(text_content, company_name):
     Follow it with 2-3 sentences explaining what this means practically (e.g. outcome depends on resolution plan, not on operating results). Do NOT then produce the normal revenue/profit/margin bullet-point analysis below - it isn't meaningful for a company in this state.
 
     STEP 2 - Only if NONE of the above red flags apply, provide a concise summary in bullet points covering:
+
     1. Key Financial Highlights - Revenue, Profit/Loss, and Margins, with YoY/QoQ growth ONLY if the company has itself provided those comparative figures in the document. If prior-period comparatives are genuinely not in the document, note that explicitly (e.g. "prior-period comparative figures not disclosed in this filing") rather than omitting silently.
-    2. Expense Breakdown - major expense line items (e.g. cost of materials, employee costs, finance costs, depreciation, other expenses), each with YoY/QoQ change ONLY if the company has itself provided those comparative figures in the document. Do not source, estimate, or infer comparative figures from anywhere outside this document. If prior-period figures for expenses are genuinely not in the document, note that explicitly rather than omitting silently.
-    3. Operational Highlights or Management Commentary
-    4. Dividend declarations or corporate actions (if any)
+
+    2. Sector-Appropriate Profitability Metric - First identify the company's business/sector from the segment reporting or business description in the document. Then:
+       - If it is a BANK, NBFC, or other financial-services lender: report Net Interest Income (NII), Net Interest Margin (NIM), Gross NPA (GNPA), Net NPA (NNPA), and Provision Coverage Ratio, but ONLY the ones the document actually discloses - these are standard disclosures for lenders, do not calculate or estimate them yourself if not given.
+       - If it is a general manufacturing, industrial, trading, or capital-intensive business: report EBITDA and EBITDA margin. If not directly stated in the document, calculate it as (Profit Before Tax + Finance Costs + Depreciation & Amortisation - Other Income) and clearly label it "(derived, not explicitly reported)".
+       - If it is an IT/services, asset-light, or non-manufacturing business: report EBIT and EBIT margin instead of EBITDA (depreciation is less distortive to compare for these). If not directly stated, calculate as (Profit Before Tax + Finance Costs - Other Income) and label it "(derived, not explicitly reported)".
+       - If the sector is ambiguous or mixed, state your best judgment of the sector in one clause and proceed with whichever metric fits better, noting the assumption.
+
+    3. Expense Breakdown - major expense line items (e.g. cost of materials, employee costs, finance costs, depreciation, other expenses), each with YoY/QoQ change ONLY if the company has itself provided those comparative figures in the document. Do not source, estimate, or infer comparative figures from anywhere outside this document. If prior-period figures for expenses are genuinely not in the document, note that explicitly rather than omitting silently.
+
+    4. Operational Highlights or Management Commentary - anything the document explicitly states about operations, outlook, capacity, order book, expansion, etc.
+
+    5. Reading Between the Lines (ONLY include this section if the document gives no explicit forward-looking guidance/outlook) - Give a short, clearly-labeled analyst-style interpretation based strictly on qualitative cues actually present in the document: auditor's remarks/qualifications, tone and specificity (or vagueness) of management's notes, mentions of capacity utilization, order book, delays, litigation, related-party activity, or unusual line items. Every point here must reference the specific cue in the document that it's based on - do not introduce outside knowledge, market rumors, or generic sector commentary. Clearly mark this whole section as interpretation, not fact, e.g. by prefixing it "Interpretation (not stated explicitly by the company):".
+
+    6. Dividend declarations or corporate actions (if any)
 
     Raw Document Text:
     {text_content[:15000]}
