@@ -59,7 +59,7 @@ def analyze_with_gemini(text_content, company_name):
     prompt = f"""
     Analyze the following financial results announcement for {company_name}.
 
-    STEP 1 - Check for "special situation" red flags in the document, including:
+    STEP 1 - Check for "special situation" red flags in the document. Known examples include:
     - Insolvency/bankruptcy proceedings (NCLT, IBC, CIRP, Resolution Professional, Interim RP, board powers suspended)
     - Fraud, misappropriation, or diversion of business/IP by past management, or an ongoing investigation
     - Trading restrictions imposed by the exchange (trade-for-trade, suspension, non-payment of listing fees)
@@ -67,7 +67,9 @@ def analyze_with_gemini(text_content, company_name):
     - Qualified or adverse audit opinion, or auditor's going-concern doubts
     - Large loan/debt default disclosed in the filing
 
-    If ANY of these apply, your response MUST start with exactly one line in this format:
+    This list is NOT exhaustive. Also flag ANY other circumstance that would make the normal revenue/profit/margin numbers misleading or not meaningfully comparable to a prior period - for example (but not limited to): a merger, demerger, or business transfer in progress; promoter share pledge invocation; a regulatory action, ban, or license suspension; litigation that freezes assets or operations; a one-time exceptional item dominating the results; or any other unusual event the document itself calls out as materially affecting the numbers. Use your judgment on anything that reads as "this isn't a normal, analyzable operating result" even if it doesn't match an example above.
+
+    If ANY such situation applies (listed or not), your response MUST start with exactly one line in this format:
     REASON: <one short phrase naming the situation, e.g. "Under NCLT insolvency (CIRP), debt in default" or "Zero revenue - fraud investigation into former MD" or "Dormant shell, no operating activity">
 
     Follow it with 2-3 sentences explaining what this means practically (e.g. outcome depends on resolution plan, not on operating results). Do NOT then produce the normal revenue/profit/margin bullet-point analysis below - it isn't meaningful for a company in this state.
