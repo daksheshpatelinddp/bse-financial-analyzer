@@ -55,7 +55,7 @@ def analyze_with_gemini(text_content, company_name):
     if not GEMINI_API_KEY:
         return "Gemini API Key missing."
         
-    model = genai.GenerativeModel('gemini-2.5-flash')
+    model = genai.GenerativeModel('gemini-3.6-flash')
     prompt = f"""
     Analyze the following financial results announcement for {company_name}.
 
