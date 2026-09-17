@@ -58,7 +58,21 @@ def analyze_with_gemini(text_content, company_name):
     model = genai.GenerativeModel('gemini-2.5-flash')
     prompt = f"""
     Analyze the following financial results announcement for {company_name}.
-    Provide a concise summary in bullet points covering:
+
+    STEP 1 - Check for "special situation" red flags in the document, including:
+    - Insolvency/bankruptcy proceedings (NCLT, IBC, CIRP, Resolution Professional, Interim RP, board powers suspended)
+    - Fraud, misappropriation, or diversion of business/IP by past management, or an ongoing investigation
+    - Trading restrictions imposed by the exchange (trade-for-trade, suspension, non-payment of listing fees)
+    - Zero or near-zero revenue with no clear ongoing business activity (dormant/shell company)
+    - Qualified or adverse audit opinion, or auditor's going-concern doubts
+    - Large loan/debt default disclosed in the filing
+
+    If ANY of these apply, your response MUST start with exactly one line in this format:
+    REASON: <one short phrase naming the situation, e.g. "Under NCLT insolvency (CIRP), debt in default" or "Zero revenue - fraud investigation into former MD" or "Dormant shell, no operating activity">
+
+    Follow it with 2-3 sentences explaining what this means practically (e.g. outcome depends on resolution plan, not on operating results). Do NOT then produce the normal revenue/profit/margin bullet-point analysis below - it isn't meaningful for a company in this state.
+
+    STEP 2 - Only if NONE of the above red flags apply, provide a concise summary in bullet points covering:
     1. Key Financial Highlights (Revenue, Profit/Loss, Margins, YoY/QoQ growth if available)
     2. Operational Highlights or Management Commentary
     3. Dividend declarations or corporate actions (if any)
@@ -75,11 +89,26 @@ def send_telegram_summary(company, headline, summary, doc_url):
         print("Telegram credentials missing; skipping summary message.")
         return
 
+    # If Gemini flagged a special situation (insolvency, fraud, dormant
+    # shell, etc.), it prefixes its reply with "REASON: ...". Pull that
+    # line out and show it as a bold warning up top instead of burying
+    # it inside the regular analysis block.
+    reason_line = None
+    body = summary
+    match = re.match(r"^\s*REASON:\s*(.+?)\s*\n(.*)$", summary, re.DOTALL)
+    if match:
+        reason_line = match.group(1).strip()
+        body = match.group(2).strip()
+
     message = f"📊 <b>GEMINI FINANCIAL SUMMARY</b>\n\n" \
               f"🏢 <b>Company:</b> {company}\n" \
-              f"📝 <b>Headline:</b> {headline}\n\n" \
-              f"<b>Analysis:</b>\n{summary}\n\n" \
-              f"📄 <a href='{doc_url}'>View Original BSE Result</a>"
+              f"📝 <b>Headline:</b> {headline}\n\n"
+
+    if reason_line:
+        message += f"⚠️ <b>REASON: {reason_line}</b>\n\n"
+
+    message += f"<b>Analysis:</b>\n{body}\n\n" \
+               f"📄 <a href='{doc_url}'>View Original BSE Result</a>"
 
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
     requests.post(url, json={
