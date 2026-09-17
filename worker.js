@@ -327,9 +327,16 @@ async function pollOnce(env, cachedWatchlist) {
     const company = item.company || "Scrip";
     const scrip = item.scrip || "";
 
-    if (settings.telegram !== false) {
-      await sendTelegramAlert(company, scrip, item.title, item.description, item.link, fetchedAt, env);
-    }
+    // NOTE: worker.js used to send its own raw "NEW FINANCIAL RESULT FILED"
+    // Telegram message here, immediately on detection and with no Gemini
+    // analysis. That's now disabled - the alert is still stored below (in
+    // `alerts`) so analyzer.py's /alerts?pending=1 can pick it up, analyze
+    // it via Gemini, and send the ONLY Telegram message for this filing.
+    // (Kept sendTelegramAlert()/settings.telegram wiring intact above in
+    // case a raw instant alert is ever wanted again - just uncomment below.)
+    // if (settings.telegram !== false) {
+    //   await sendTelegramAlert(company, scrip, item.title, item.description, item.link, fetchedAt, env);
+    // }
 
     alerts.unshift({
       company,
