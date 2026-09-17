@@ -75,9 +75,10 @@ def analyze_with_gemini(text_content, company_name):
     Follow it with 2-3 sentences explaining what this means practically (e.g. outcome depends on resolution plan, not on operating results). Do NOT then produce the normal revenue/profit/margin bullet-point analysis below - it isn't meaningful for a company in this state.
 
     STEP 2 - Only if NONE of the above red flags apply, provide a concise summary in bullet points covering:
-    1. Key Financial Highlights (Revenue, Profit/Loss, Margins, YoY/QoQ growth if available)
-    2. Operational Highlights or Management Commentary
-    3. Dividend declarations or corporate actions (if any)
+    1. Key Financial Highlights - Revenue, Profit/Loss, and Margins, with YoY/QoQ growth ONLY if the company has itself provided those comparative figures in the document. If prior-period comparatives are genuinely not in the document, note that explicitly (e.g. "prior-period comparative figures not disclosed in this filing") rather than omitting silently.
+    2. Expense Breakdown - major expense line items (e.g. cost of materials, employee costs, finance costs, depreciation, other expenses), each with YoY/QoQ change ONLY if the company has itself provided those comparative figures in the document. Do not source, estimate, or infer comparative figures from anywhere outside this document. If prior-period figures for expenses are genuinely not in the document, note that explicitly rather than omitting silently.
+    3. Operational Highlights or Management Commentary
+    4. Dividend declarations or corporate actions (if any)
 
     Raw Document Text:
     {text_content[:15000]}
