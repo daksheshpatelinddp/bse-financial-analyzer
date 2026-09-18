@@ -55,7 +55,7 @@ def analyze_with_gemini(text_content, company_name):
     if not GEMINI_API_KEY:
         return "Gemini API Key missing."
         
-    model = genai.GenerativeModel('gemini-3.6-flash')
+    model = genai.GenerativeModel('gemini-3.5-flash-lite')
     prompt = f"""
     Analyze the following financial results announcement for {company_name}.
 
@@ -177,12 +177,21 @@ def main():
                 if fingerprint:
                     done_fingerprints.append(fingerprint)
             except Exception as e:
-                print(f"Skipping {company} due to error: {e}")
-                # Mark as processed even on failure (e.g. BSE blocked the
-                # download from GitHub's IPs) so a permanently-broken filing
-                # doesn't get retried forever every run.
-                if fingerprint:
-                    done_fingerprints.append(fingerprint)
+                err_text = str(e)
+                is_rate_limit = "429" in err_text or "quota" in err_text.lower()
+                if is_rate_limit:
+                    # Transient - Gemini's daily/per-minute quota was hit.
+                    # Do NOT mark as processed, so this alert is retried on
+                    # a later run once the quota window resets, instead of
+                    # being silently and permanently lost.
+                    print(f"Leaving {company} pending (Gemini rate/quota limit hit): {e}")
+                else:
+                    print(f"Skipping {company} due to error: {e}")
+                    # Mark as processed on other failures (e.g. BSE blocked the
+                    # download from GitHub's IPs, malformed document) so a
+                    # genuinely-broken filing doesn't get retried forever.
+                    if fingerprint:
+                        done_fingerprints.append(fingerprint)
 
         mark_processed(done_fingerprints)
 
