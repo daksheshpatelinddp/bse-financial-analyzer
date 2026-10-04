@@ -59,6 +59,18 @@ def analyze_with_gemini(text_content, company_name):
     prompt = f"""
     Analyze the following financial results announcement for {company_name}.
 
+    PRE-CHECK CRITICAL REQUIREMENT:
+    Examine the document specifically for comparable prior-period financial numbers.
+    Does the document contain BOTH:
+    1. Year-on-Year (YoY) comparative financial figures (e.g., corresponding 3-month/quarter period of the previous financial year)?
+    AND
+    2. Quarter-on-Quarter (QoQ) comparative financial figures (e.g., preceding quarter of the current financial year)?
+
+    If the filing is MISSING EITHER YoY OR QoQ comparative numbers (or if no prior period comparative data is provided at all), you MUST reply with ONLY this single word on the very first line:
+    NO_COMPARABLE_DATA
+
+    --------------------------------------------------------------------------------
+
     STEP 1 - Check for "special situation" red flags in the document. Known examples include:
     - Insolvency/bankruptcy proceedings (NCLT, IBC, CIRP, Resolution Professional, Interim RP, board powers suspended)
     - Fraud, misappropriation, or diversion of business/IP by past management, or an ongoing investigation
@@ -74,9 +86,9 @@ def analyze_with_gemini(text_content, company_name):
 
     Follow it with 2-3 sentences explaining what this means practically (e.g. outcome depends on resolution plan, not on operating results). Do NOT then produce the normal revenue/profit/margin bullet-point analysis below - it isn't meaningful for a company in this state.
 
-    STEP 2 - Only if NONE of the above red flags apply, provide a concise summary in bullet points covering:
+    STEP 2 - Only if NONE of the above red flags apply AND BOTH YoY and QoQ comparative data are present, provide a concise summary in bullet points covering:
 
-    1. Key Financial Highlights - Revenue, Profit/Loss, and Margins, with YoY/QoQ growth ONLY if the company has itself provided those comparative figures in the document. If prior-period comparatives are genuinely not in the document, note that explicitly (e.g. "prior-period comparative figures not disclosed in this filing") rather than omitting silently.
+    1. Key Financial Highlights - Revenue, Profit/Loss, and Margins with YoY and QoQ growth performance breakdowns.
 
     2. Sector-Appropriate Profitability Metric - First identify the company's business/sector from the segment reporting or business description in the document. Then:
        - If it is a BANK, NBFC, or other financial-services lender: report Net Interest Income (NII), Net Interest Margin (NIM), Gross NPA (GNPA), Net NPA (NNPA), and Provision Coverage Ratio, but ONLY the ones the document actually discloses - these are standard disclosures for lenders, do not calculate or estimate them yourself if not given.
@@ -84,7 +96,7 @@ def analyze_with_gemini(text_content, company_name):
        - If it is an IT/services, asset-light, or non-manufacturing business: report EBIT and EBIT margin instead of EBITDA (depreciation is less distortive to compare for these). If not directly stated, calculate as (Profit Before Tax + Finance Costs - Other Income) and label it "(derived, not explicitly reported)".
        - If the sector is ambiguous or mixed, state your best judgment of the sector in one clause and proceed with whichever metric fits better, noting the assumption.
 
-    3. Expense Breakdown - major expense line items (e.g. cost of materials, employee costs, finance costs, depreciation, other expenses), each with YoY/QoQ change ONLY if the company has itself provided those comparative figures in the document. Do not source, estimate, or infer comparative figures from anywhere outside this document. If prior-period figures for expenses are genuinely not in the document, note that explicitly rather than omitting silently.
+    3. Expense Breakdown - major expense line items (e.g. cost of materials, employee costs, finance costs, depreciation, other expenses), each with YoY and QoQ change.
 
     4. Operational Highlights or Management Commentary - anything the document explicitly states about operations, outlook, capacity, order book, expansion, etc.
 
@@ -104,10 +116,6 @@ def send_telegram_summary(company, headline, summary, doc_url):
         print("Telegram credentials missing; skipping summary message.")
         return
 
-    # If Gemini flagged a special situation (insolvency, fraud, dormant
-    # shell, etc.), it prefixes its reply with "REASON: ...". Pull that
-    # line out and show it as a bold warning up top instead of burying
-    # it inside the regular analysis block.
     reason_line = None
     body = summary
     match = re.match(r"^\s*REASON:\s*(.+?)\s*\n(.*)$", summary, re.DOTALL)
@@ -115,9 +123,9 @@ def send_telegram_summary(company, headline, summary, doc_url):
         reason_line = match.group(1).strip()
         body = match.group(2).strip()
 
-    message = f"📊 <b>GEMINI FINANCIAL SUMMARY</b>\n\n" \
+    message = f"🚨 <b>GEMINI FINANCIAL SUMMARY</b>\n\n" \
               f"🏢 <b>Company:</b> {company}\n" \
-              f"📝 <b>Headline:</b> {headline}\n\n"
+              f"📋 <b>Headline:</b> {headline}\n\n"
 
     if reason_line:
         message += f"⚠️ <b>REASON: {reason_line}</b>\n\n"
@@ -146,8 +154,6 @@ def mark_processed(fingerprints):
 def main():
     print("Checking Worker for newly alerted financial results...")
     try:
-        # ?pending=1 filters out alerts this pipeline has already summarized,
-        # so the same 1-3 alerts aren't reprocessed/re-sent every run.
         res = requests.get(f"{WORKER_URL}/alerts?pending=1", timeout=15)
         if res.status_code != 200:
             print("No pending alerts returned from backend worker.")
@@ -173,23 +179,23 @@ def main():
             try:
                 doc_text = download_and_extract_document(doc_url)
                 summary = analyze_with_gemini(doc_text, company)
-                send_telegram_summary(company, headline, summary, doc_url)
+
+                # Check if filing lacks YoY/QoQ comparative data
+                if summary.strip().startswith("NO_COMPARABLE_DATA"):
+                    print(f"Skipping Telegram alert for {company}: Missing QoQ or YoY comparative data.")
+                else:
+                    send_telegram_summary(company, headline, summary, doc_url)
+
                 if fingerprint:
                     done_fingerprints.append(fingerprint)
+
             except Exception as e:
                 err_text = str(e)
                 is_rate_limit = "429" in err_text or "quota" in err_text.lower()
                 if is_rate_limit:
-                    # Transient - Gemini's daily/per-minute quota was hit.
-                    # Do NOT mark as processed, so this alert is retried on
-                    # a later run once the quota window resets, instead of
-                    # being silently and permanently lost.
                     print(f"Leaving {company} pending (Gemini rate/quota limit hit): {e}")
                 else:
                     print(f"Skipping {company} due to error: {e}")
-                    # Mark as processed on other failures (e.g. BSE blocked the
-                    # download from GitHub's IPs, malformed document) so a
-                    # genuinely-broken filing doesn't get retried forever.
                     if fingerprint:
                         done_fingerprints.append(fingerprint)
 
