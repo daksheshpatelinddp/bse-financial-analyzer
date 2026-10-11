@@ -59,18 +59,6 @@ def analyze_with_gemini(text_content, company_name):
     prompt = f"""
     Analyze the following financial results announcement for {company_name}.
 
-    PRE-CHECK CRITICAL REQUIREMENT:
-    Examine the document specifically for comparable prior-period financial numbers.
-    Does the document contain BOTH:
-    1. Year-on-Year (YoY) comparative financial figures (e.g., corresponding 3-month/quarter period of the previous financial year)?
-    AND
-    2. Quarter-on-Quarter (QoQ) comparative financial figures (e.g., preceding quarter of the current financial year)?
-
-    If the filing is MISSING EITHER YoY OR QoQ comparative numbers (or if no prior period comparative data is provided at all), you MUST reply with ONLY this single word on the very first line:
-    NO_COMPARABLE_DATA
-
-    --------------------------------------------------------------------------------
-
     STEP 1 - Check for "special situation" red flags in the document. Known examples include:
     - Insolvency/bankruptcy proceedings (NCLT, IBC, CIRP, Resolution Professional, Interim RP, board powers suspended)
     - Fraud, misappropriation, or diversion of business/IP by past management, or an ongoing investigation
@@ -79,28 +67,28 @@ def analyze_with_gemini(text_content, company_name):
     - Qualified or adverse audit opinion, or auditor's going-concern doubts
     - Large loan/debt default disclosed in the filing
 
-    This list is NOT exhaustive. Also flag ANY other circumstance that would make the normal revenue/profit/margin numbers misleading or not meaningfully comparable to a prior period - for example (but not limited to): a merger, demerger, or business transfer in progress; promoter share pledge invocation; a regulatory action, ban, or license suspension; litigation that freezes assets or operations; a one-time exceptional item dominating the results; or any other unusual event the document itself calls out as materially affecting the numbers. Use your judgment on anything that reads as "this isn't a normal, analyzable operating result" even if it doesn't match an example above.
+    This list is NOT exhaustive. Also flag ANY other circumstance that would make the normal revenue/profit/margin numbers misleading or not meaningfully comparable - for example: a merger, demerger, or business transfer in progress; promoter share pledge invocation; a regulatory action, ban, or license suspension; litigation that freezes assets or operations; a one-time exceptional item dominating the results; or any other unusual event the document itself calls out as materially affecting the numbers.
 
     If ANY such situation applies (listed or not), your response MUST start with exactly one line in this format:
-    REASON: <one short phrase naming the situation, e.g. "Under NCLT insolvency (CIRP), debt in default" or "Zero revenue - fraud investigation into former MD" or "Dormant shell, no operating activity">
+    REASON: <one short phrase naming the situation, e.g. "Under NCLT insolvency (CIRP), debt in default" or "Zero revenue - fraud investigation into former MD">
 
-    Follow it with 2-3 sentences explaining what this means practically (e.g. outcome depends on resolution plan, not on operating results). Do NOT then produce the normal revenue/profit/margin bullet-point analysis below - it isn't meaningful for a company in this state.
+    Follow it with 2-3 sentences explaining what this means practically. Do NOT then produce the normal revenue/profit/margin bullet-point analysis below.
 
-    STEP 2 - Only if NONE of the above red flags apply AND BOTH YoY and QoQ comparative data are present, provide a concise summary in bullet points covering:
+    STEP 2 - If NONE of the above red flags apply, provide a concise summary in bullet points covering:
 
-    1. Key Financial Highlights - Revenue, Profit/Loss, and Margins with YoY and QoQ growth performance breakdowns.
+    1. Key Financial Highlights - Revenue, Profit/Loss, and Margins with available YoY and QoQ growth performance breakdowns (explicitly note if YoY or QoQ comparative figures are absent in the filing).
 
     2. Sector-Appropriate Profitability Metric - First identify the company's business/sector from the segment reporting or business description in the document. Then:
-       - If it is a BANK, NBFC, or other financial-services lender: report Net Interest Income (NII), Net Interest Margin (NIM), Gross NPA (GNPA), Net NPA (NNPA), and Provision Coverage Ratio, but ONLY the ones the document actually discloses - these are standard disclosures for lenders, do not calculate or estimate them yourself if not given.
-       - If it is a general manufacturing, industrial, trading, or capital-intensive business: report EBITDA and EBITDA margin. If not directly stated in the document, calculate it as (Profit Before Tax + Finance Costs + Depreciation & Amortisation - Other Income) and clearly label it "(derived, not explicitly reported)".
-       - If it is an IT/services, asset-light, or non-manufacturing business: report EBIT and EBIT margin instead of EBITDA (depreciation is less distortive to compare for these). If not directly stated, calculate as (Profit Before Tax + Finance Costs - Other Income) and label it "(derived, not explicitly reported)".
-       - If the sector is ambiguous or mixed, state your best judgment of the sector in one clause and proceed with whichever metric fits better, noting the assumption.
+       - If it is a BANK, NBFC, or other financial-services lender: report Net Interest Income (NII), Net Interest Margin (NIM), Gross NPA (GNPA), Net NPA (NNPA), and Provision Coverage Ratio, but ONLY the ones the document actually discloses.
+       - If it is a general manufacturing, industrial, trading, or capital-intensive business: report EBITDA and EBITDA margin. If not directly stated, calculate as (Profit Before Tax + Finance Costs + Depreciation & Amortisation - Other Income) and clearly label it "(derived, not explicitly reported)".
+       - If it is an IT/services, asset-light, or non-manufacturing business: report EBIT and EBIT margin instead of EBITDA. If not directly stated, calculate as (Profit Before Tax + Finance Costs - Other Income) and label it "(derived, not explicitly reported)".
+       - If the sector is ambiguous or mixed, state your best judgment of the sector in one clause and proceed with whichever metric fits better.
 
-    3. Expense Breakdown - major expense line items (e.g. cost of materials, employee costs, finance costs, depreciation, other expenses), each with YoY and QoQ change.
+    3. Expense Breakdown - major expense line items (e.g. cost of materials, employee costs, finance costs, depreciation, other expenses), each with available change metrics.
 
     4. Operational Highlights or Management Commentary - anything the document explicitly states about operations, outlook, capacity, order book, expansion, etc.
 
-    5. Reading Between the Lines (ONLY include this section if the document gives no explicit forward-looking guidance/outlook) - Give a short, clearly-labeled analyst-style interpretation based strictly on qualitative cues actually present in the document: auditor's remarks/qualifications, tone and specificity (or vagueness) of management's notes, mentions of capacity utilization, order book, delays, litigation, related-party activity, or unusual line items. Every point here must reference the specific cue in the document that it's based on - do not introduce outside knowledge, market rumors, or generic sector commentary. Clearly mark this whole section as interpretation, not fact, e.g. by prefixing it "Interpretation (not stated explicitly by the company):".
+    5. Reading Between the Lines (ONLY include this section if the document gives no explicit forward-looking guidance/outlook) - Give a short, clearly-labeled analyst-style interpretation based strictly on qualitative cues actually present in the document: auditor's remarks/qualifications, tone and specificity of management's notes, mentions of capacity utilization, order book, delays, litigation, or unusual line items. Clearly mark this whole section as interpretation, e.g. by prefixing it "Interpretation (not stated explicitly by the company):".
 
     6. Dividend declarations or corporate actions (if any)
 
@@ -180,11 +168,8 @@ def main():
                 doc_text = download_and_extract_document(doc_url)
                 summary = analyze_with_gemini(doc_text, company)
 
-                # Check if filing lacks YoY/QoQ comparative data
-                if summary.strip().startswith("NO_COMPARABLE_DATA"):
-                    print(f"Skipping Telegram alert for {company}: Missing QoQ or YoY comparative data.")
-                else:
-                    send_telegram_summary(company, headline, summary, doc_url)
+                # Send Telegram summary regardless of YoY/QoQ availability
+                send_telegram_summary(company, headline, summary, doc_url)
 
                 if fingerprint:
                     done_fingerprints.append(fingerprint)
